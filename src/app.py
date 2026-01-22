@@ -20,7 +20,7 @@ except ImportError:
 
 # Import the Forecaster
 try:
-    from forecaster import generate_forecast
+    from forecaster import generate_forecast_plot
     FORECAST_MODULE_AVAILABLE = True
 except ImportError:
     FORECAST_MODULE_AVAILABLE = False
@@ -201,7 +201,7 @@ with col2:
         """, unsafe_allow_html=True)
 
 # --- TABS FOR DIFFERENT VIEWS ---
-tab1, tab2 = st.tabs(["🚨 Surveillance Map", "📈 Predictive Analytics"])
+tab1, tab2, tab3 = st.tabs(["🚨 Surveillance Map", "📈 Predictive Analytics", "👥 Societal Trends"])
 
 # --- TAB 1: SURVEILLANCE MAP ---
 with tab1:
@@ -332,19 +332,80 @@ with tab1:
     else:
         st.info("Awaiting Data...")
 
-# --- TAB 2: PREDICTIVE ANALYTICS ---
+# --- TAB 2: FORECASTING (Optimized) ---
 with tab2:
     st.subheader("🔮 Demand Forecasting (Next 30 Days)")
     st.markdown("Prophet AI model prediction for biometric update volume. Used for resource allocation.")
     
     if FORECAST_MODULE_AVAILABLE:
-        try:
-            fig_forecast = generate_forecast(days=30)
-            if fig_forecast:
-                st.plotly_chart(fig_forecast, use_container_width=True)
-            else:
-                st.warning("Insufficient data points for forecasting. Need at least 5 days of history.")
-        except Exception as e:
-            st.error(f"Forecasting Error: {e}")
+        # Use spinner to indicate background work
+        with st.spinner("AI is calculating trends..."):
+            try:
+                fig_forecast = generate_forecast_plot()
+                
+                if fig_forecast:
+                    st.plotly_chart(fig_forecast, use_container_width=True)
+                    st.info("💡 Insight: Red line indicates projected demand. Plan Mobile Kit deployment accordingly.")
+                else:
+                    st.warning("Insufficient historical data to generate a reliable forecast.")
+                    st.text("Please ensure 'data/daily_timeseries.csv' exists and has >5 days of data.")
+            except Exception as e:
+                st.error(f"Visualization Error: {e}")
     else:
-        st.error("Forecaster module missing. Please install `prophet`.")
+        st.error("Forecaster module not loaded. Check src/forecaster.py")
+
+# --- TAB 3: SOCIETAL TRENDS (NEW) ---
+with tab3:
+    st.subheader("👥 Societal Trends & Migration Analysis")
+    st.markdown("Unlocking demographic shifts using Address Update vs. Biometric Update ratios.")
+    
+    if not df_filtered.empty:
+        # 1. Migration Hotspots (District Level)
+        # Group by District to find high mobility zones
+        # We handle cases where columns might be missing or summed weirdly
+        try:
+            # We need to sum the raw columns again or use the pre-calculated features
+            # Let's use the master_df columns we know exist
+            mobility_df = df_filtered.groupby('district')[['velocity_index', 'ghost_ratio']].mean().reset_index()
+            
+            # Identify Migration Hubs (High Ghost Ratio = High Address Change relative to Bio)
+            top_mobility = mobility_df.sort_values('ghost_ratio', ascending=False).head(10)
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### 🏃 High Migration Zones (Districts)")
+                st.markdown("*Districts with highest Address Change vs Biometric Update ratio.*")
+                fig_mob = px.bar(
+                    top_mobility, 
+                    x='ghost_ratio', 
+                    y='district', 
+                    orientation='h', 
+                    color='ghost_ratio', 
+                    title="Migration Intensity Index",
+                    color_continuous_scale='Viridis'
+                )
+                fig_mob.update_layout(yaxis={'categoryorder':'total ascending'}, paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig_mob, use_container_width=True)
+                
+            with c2:
+                st.markdown("#### 👶 vs 👨 Demographic Risk Split")
+                st.markdown("*Breakdown of high-risk anomalies by category.*")
+                
+                # Count risk factors
+                risk_counts = df_filtered['primary_risk_factor'].value_counts().reset_index()
+                risk_counts.columns = ['Risk Type', 'Count']
+                
+                fig_dem = px.pie(
+                    risk_counts, 
+                    names='Risk Type', 
+                    values='Count', 
+                    color_discrete_sequence=px.colors.sequential.Plasma,
+                    hole=0.3
+                )
+                fig_dem.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig_dem, use_container_width=True)
+                
+        except Exception as e:
+            st.error(f"Error calculating trends: {e}")
+    else:
+        st.info("Load data to see trends.")

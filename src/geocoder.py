@@ -1,11 +1,10 @@
 import pandas as pd
-from geopy.geocoders import Nominatim
-from geopy.extra.rate_limiter import RateLimiter
+from geopy.geocoders import ArcGIS
 import time
 import os
 
 def enrich_anomalies_with_coords():
-    print("🛰️ [Geocoder] Initializing Satellite Link (Nominatim)...")
+    print("🛰️ [Geocoder] Initializing Satellite Link (ArcGIS)...")
     
     # Load the scored data
     input_path = "data/final_scored_data.csv"
@@ -15,58 +14,58 @@ def enrich_anomalies_with_coords():
 
     df = pd.read_csv(input_path)
     
-    # Filter for Critical Anomalies ONLY (To save time/API limits)
-    # We will only pinpoint the threats. 
+    # Filter for Critical Anomalies ONLY
     critical_mask = df['risk_status'] == 'CRITICAL'
     critical_df = df[critical_mask].copy()
     
     print(f"📍 Found {len(critical_df)} Critical Anomalies to geolocate.")
-    print("   Fetching exact coordinates... (This may take 2-3 minutes)")
+    print("   Fetching exact coordinates... (This uses ArcGIS, it's faster but give it time)")
 
-    # Initialize Geocoder
-    geolocator = Nominatim(user_agent="project_drishti_hackathon_v1")
-    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
+    # SWITCH TO ARCGIS (More robust than Nominatim)
+    geolocator = ArcGIS(timeout=10) # 10-second timeout to prevent errors
 
     # Function to fetch coords
     def get_lat_long(row):
         try:
-            # Query format: "110001, Delhi, India"
-            query = f"{row['pincode']}, {row['district']}, India"
-            location = geocode(query)
+            # Query format: "110001, India" (Simple is often better for Pincodes)
+            query = f"{row['pincode']}, India"
+            location = geolocator.geocode(query)
+            
             if location:
                 return pd.Series([location.latitude, location.longitude])
             else:
-                # Fallback: Try just Pincode + India
-                location = geocode(f"{row['pincode']}, India")
+                # Fallback: Try with District
+                query_district = f"{row['district']}, {row['state']}, India"
+                location = geolocator.geocode(query_district)
                 if location:
                     return pd.Series([location.latitude, location.longitude])
+                
                 return pd.Series([None, None])
         except Exception as e:
             print(f"   ⚠️ Error locating {row['pincode']}: {e}")
             return pd.Series([None, None])
 
     # Apply Geocoding
-    # We use a progress indicator logic here implicitly by the speed
-    cols = critical_df.apply(get_lat_long, axis=1)
-    critical_df[['real_lat', 'real_lon']] = cols
-
-    # Merge back into main dataframe
-    # We left join so non-critical rows get NaN (which is fine, we filter them in UI)
-    print("   Merging coordinates...")
+    # We do it in a loop to show progress bar-like output
+    total = len(critical_df)
+    for index, row in critical_df.iterrows():
+        print(f"   Searching: {row['pincode']}...", end="\r")
+        res = get_lat_long(row)
+        critical_df.at[index, 'real_lat'] = res[0]
+        critical_df.at[index, 'real_lon'] = res[1]
+        
+    print("\n   Merging coordinates...")
     
-    # Update the original DF with these new real coordinates
-    # We iterate and update to ensure precision
+    # Update the original DF
     df['lat'] = 0.0
     df['lon'] = 0.0
+    df['geo_accuracy'] = 'Low'
     
     for index, row in critical_df.iterrows():
         if not pd.isna(row['real_lat']):
             df.at[index, 'lat'] = row['real_lat']
             df.at[index, 'lon'] = row['real_lon']
-            # Flag that this row has high-precision coords
             df.at[index, 'geo_accuracy'] = 'High'
-        else:
-             df.at[index, 'geo_accuracy'] = 'Low'
 
     # Save
     output_path = "data/final_scored_data_geocoded.csv"
@@ -75,3 +74,4 @@ def enrich_anomalies_with_coords():
 
 if __name__ == "__main__":
     enrich_anomalies_with_coords()
+    
