@@ -24,9 +24,12 @@ def get_forecast_model():
         # 3. Data Cleaning
         # Prophet strictly requires columns named 'ds' (date) and 'y' (target)
         if 'ds' not in df.columns or 'y' not in df.columns:
-            # Try to infer if columns are misnamed
-            # Assuming first col is date, last is value
-            df = df.rename(columns={df.columns[0]: 'ds', df.columns[-1]: 'y'})
+            # Try to infer if columns are misnamed or just grab by position
+            # Assuming first col is date, last is value if names don't match
+            if len(df.columns) >= 2:
+                 df = df.rename(columns={df.columns[0]: 'ds', df.columns[-1]: 'y'})
+            else:
+                return None
             
         df['ds'] = pd.to_datetime(df['ds'], errors='coerce')
         df = df.dropna(subset=['ds', 'y'])
@@ -36,7 +39,7 @@ def get_forecast_model():
             return None 
 
         # 4. Train Model
-        # Using lightweight parameters for speed
+        # Using lightweight parameters for speed in a hackathon demo
         m = Prophet(
             daily_seasonality=False,
             yearly_seasonality=False,
@@ -86,6 +89,7 @@ def generate_forecast_plot():
     ))
 
     # C. Confidence Interval (Uncertainty Shadow)
+    # Visualizes the margin of error
     fig.add_trace(go.Scatter(
         x=pd.concat([pred_data['ds'], pred_data['ds'][::-1]]),
         y=pd.concat([pred_data['yhat_upper'], pred_data['yhat_lower'][::-1]]),
@@ -97,7 +101,7 @@ def generate_forecast_plot():
         name="Confidence Interval"
     ))
 
-    # D. Layout Styling (Dark Mode)
+    # D. Layout Styling (Dark Mode / Cyber Theme)
     fig.update_layout(
         title="Predictive Resource Demand (Next 30 Days)",
         plot_bgcolor='rgba(0,0,0,0)',
@@ -129,8 +133,11 @@ def generate_forecast_plot():
 # Unit Test
 if __name__ == "__main__":
     print("Testing Forecaster...")
-    fig = generate_forecast_plot()
-    if fig:
-        print("✅ Forecast generated successfully.")
-    else:
-        print("❌ Forecast generation failed. Check 'data/daily_timeseries.csv'.")
+    try:
+        fig = generate_forecast_plot()
+        if fig:
+            print("✅ Forecast generated successfully.")
+        else:
+            print("❌ Forecast generation failed. Check 'data/daily_timeseries.csv'.")
+    except Exception as e:
+        print(f"❌ Error during test: {e}")

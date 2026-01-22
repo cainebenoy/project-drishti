@@ -96,6 +96,18 @@ def load_data_engine():
 
     return pd.DataFrame(), "Data not found. Please run engine.py first.", "❌"
 
+@st.cache_data
+def load_timeseries():
+    # Load Time-Series for Seasonality Analysis
+    if os.path.exists("data/daily_timeseries.csv"):
+        try:
+            df = pd.read_csv("data/daily_timeseries.csv")
+            df['ds'] = pd.to_datetime(df['ds'])
+            return df
+        except: 
+            pass
+    return pd.DataFrame()
+
 def process_coordinates(df):
     if df.empty: return df
 
@@ -133,6 +145,7 @@ def process_coordinates(df):
 
 # --- APP EXECUTION STARTS HERE ---
 raw_df, msg, icon = load_data_engine()
+ts_df = load_timeseries() # Load the TS data
 
 # Display Status Toast
 if not raw_df.empty and msg:
@@ -229,8 +242,19 @@ with tab1:
                 color = "#FF0000" if is_critical else "#00FFFF"
                 radius = 6 if is_critical else 2
                 
-                # Label Accuracy Tag
+                # Dynamic Popup Content
+                risk_factor = row['primary_risk_factor']
+                risk_value = row.get(risk_factor, 0)
+                val_str = f"{risk_value:.2f}"
+
                 accuracy_tag = "🛰️ GPS Verified" if row.get('geo_accuracy') == 'High' else "⚠️ Approx Loc"
+                
+                popup_html = f"""
+                <b>Pincode: {row['pincode']}</b><br>
+                Risk: {risk_factor.replace('_',' ').title()}<br>
+                Value: <b>{val_str}</b><br>
+                <small>{accuracy_tag}</small>
+                """
                 
                 folium.CircleMarker(
                     location=[row['lat'], row['lon']],
@@ -239,7 +263,7 @@ with tab1:
                     fill=True,
                     fill_color=color,
                     fill_opacity=0.8,
-                    popup=folium.Popup(f"<b>Pincode: {row['pincode']}</b><br>Risk: {row['primary_risk_factor']}<br><small>{accuracy_tag}</small>", max_width=200)
+                    popup=folium.Popup(popup_html, max_width=200)
                 ).add_to(m)
 
             st_folium(m, width=None, height=400)
@@ -359,13 +383,25 @@ with tab3:
     st.subheader("👥 Societal Trends & Migration Analysis")
     st.markdown("Unlocking demographic shifts using Address Update vs. Biometric Update ratios.")
     
-    if not df_filtered.empty:
-        # 1. Migration Hotspots (District Level)
-        # Group by District to find high mobility zones
-        # We handle cases where columns might be missing or summed weirdly
+    # 1. Migration Seasonality Chart
+    if not ts_df.empty:
+        st.markdown("#### 📅 Migration Seasonality (Weekly Pattern)")
         try:
-            # We need to sum the raw columns again or use the pre-calculated features
-            # Let's use the master_df columns we know exist
+            if 'y' in ts_df.columns:
+                fig_season = px.line(ts_df, x='ds', y='y', title="Update Volume Timeline (Proxy for Movement)")
+                fig_season.update_traces(line_color='#FF4B4B')
+                fig_season.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white", xaxis_title="Date", yaxis_title="Activity Volume")
+                st.plotly_chart(fig_season, use_container_width=True)
+                st.caption("Peaks in this chart often correlate with pre-harvest or post-festival migration periods.")
+        except Exception as e:
+            st.error(f"Could not render seasonality: {e}")
+
+    st.markdown("---")
+
+    if not df_filtered.empty:
+        # 2. Migration Hotspots (District Level)
+        try:
+            # We handle cases where columns might be missing or summed weirdly
             mobility_df = df_filtered.groupby('district')[['velocity_index', 'ghost_ratio']].mean().reset_index()
             
             # Identify Migration Hubs (High Ghost Ratio = High Address Change relative to Bio)

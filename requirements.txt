@@ -1,0 +1,12 @@
+pandas
+numpy
+scikit-learn
+shap
+streamlit
+plotly
+folium
+streamlit-folium
+geopy
+prophet
+reportlab
+joblib
