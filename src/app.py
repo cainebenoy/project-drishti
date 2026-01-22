@@ -4,6 +4,7 @@ import plotly.express as px
 import folium
 from streamlit_folium import st_folium
 import numpy as np
+import os
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -37,44 +38,75 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA LOADER ---
+# --- DATA LOADER (Pure Data Logic Only) ---
 @st.cache_data
-def load_data():
-    try:
-        df = pd.read_csv("data/final_scored_data.csv")
-    except FileNotFoundError:
-        st.error("❌ Data not found. Please run engine.py first.")
-        return pd.DataFrame()
+def load_data_engine():
+    """
+    Loads data and returns a tuple: (DataFrame, status_message, status_icon)
+    This prevents UI calls inside the cached function.
+    """
+    # Priority: Load Geocoded data if available
+    if os.path.exists("data/final_scored_data_geocoded.csv"):
+        try:
+            df = pd.read_csv("data/final_scored_data_geocoded.csv")
+            return df, "High-Precision Satellite Data Loaded", "🛰️"
+        except Exception:
+            return pd.DataFrame(), "Error loading Geocoded Data", "❌"
+            
+    elif os.path.exists("data/final_scored_data.csv"):
+        try:
+            df = pd.read_csv("data/final_scored_data.csv")
+            return df, "Using Standard Dataset (Run geocoder.py for precision)", "ℹ️"
+        except Exception:
+             return pd.DataFrame(), "Error loading Standard Data", "❌"
+    else:
+        return pd.DataFrame(), "Data not found. Please run engine.py first.", "❌"
 
-    # --- COORDINATE SIMULATION (HACK FOR DEMO) ---
+def process_coordinates(df):
+    if df.empty: return df
+
+    # Ensure required columns exist
+    if 'lat' not in df.columns: df['lat'] = 0.0
+    if 'lon' not in df.columns: df['lon'] = 0.0
+    if 'geo_accuracy' not in df.columns: df['geo_accuracy'] = 'Low'
+
+    # Fallback Simulation for Low-Accuracy rows (Safe Zones)
     state_coords = {
-        "Delhi": [28.7041, 77.1025],
-        "Maharashtra": [19.7515, 75.7139],
-        "Uttar Pradesh": [26.8467, 80.9462],
-        "Karnataka": [15.3173, 75.7139],
-        "Bihar": [25.0961, 85.3131],
-        "Tamil Nadu": [11.1271, 78.6569],
-        "West Bengal": [22.9868, 87.8550],
-        "Gujarat": [22.2587, 71.1924],
+        "Delhi": [28.7041, 77.1025], "Maharashtra": [19.7515, 75.7139],
+        "Uttar Pradesh": [26.8467, 80.9462], "Karnataka": [15.3173, 75.7139],
+        "Bihar": [25.0961, 85.3131], "Tamil Nadu": [11.1271, 78.6569],
+        "West Bengal": [22.9868, 87.8550], "Gujarat": [22.2587, 71.1924],
         "Rajasthan": [27.0238, 74.2179],
     }
     
-    def get_lat(row):
+    def fill_coords(row):
+        # Keep real coords if they exist
+        if not pd.isna(row['lat']) and row['lat'] != 0.0:
+            return row['lat'], row['lon']
+        
+        # Simulate for safe zones / missing data
         base = state_coords.get(row['state'], [20.5937, 78.9629])
-        jitter = (int(row['pincode']) % 100) / 100.0 
-        return base[0] + (jitter * 0.1)
+        jitter_lat = (int(row['pincode']) % 100) / 100.0 
+        jitter_lon = (int(row['pincode']) % 200) / 100.0 
+        return base[0] + (jitter_lat * 0.1), base[1] + (jitter_lon * 0.1)
 
-    def get_lon(row):
-        base = state_coords.get(row['state'], [20.5937, 78.9629])
-        jitter = (int(row['pincode']) % 200) / 100.0 
-        return base[1] + (jitter * 0.1)
-
-    df['lat'] = df.apply(get_lat, axis=1)
-    df['lon'] = df.apply(get_lon, axis=1)
+    # Apply filling
+    coords = df.apply(fill_coords, axis=1)
+    df['lat'] = [x[0] for x in coords]
+    df['lon'] = [x[1] for x in coords]
     
     return df
 
-df = load_data()
+# --- EXECUTION ---
+raw_df, msg, icon = load_data_engine()
+
+# Display Toast (Outside cached function)
+if not raw_df.empty and msg:
+    st.toast(msg, icon=icon)
+elif msg:
+    st.error(msg)
+
+df = process_coordinates(raw_df)
 
 # --- SIDEBAR FILTERS ---
 st.sidebar.title("👁️ Drishti Controls")
@@ -89,9 +121,11 @@ if not df.empty:
 
     risk_filter = st.sidebar.radio(
         "Threat Level",
-        ["All", "CRITICAL Only", "Low Risk"]
+        ["All", "CRITICAL Only", "Low Risk"],
+        index=1 # Default to Critical
     )
 
+    # Apply Filters
     df_filtered = df.copy()
     if state_filter:
         df_filtered = df_filtered[df_filtered['state'].isin(state_filter)]
@@ -139,15 +173,28 @@ m_col1, m_col2 = st.columns([2, 1])
 
 with m_col1:
     st.subheader("📍 Geospatial Anomaly Distribution")
+    
     if not df_filtered.empty:
-        map_center = [df_filtered['lat'].mean(), df_filtered['lon'].mean()]
-        m = folium.Map(location=map_center, zoom_start=6, tiles='CartoDB dark_matter')
+        # Map Centering Logic
+        if risk_filter == "CRITICAL Only" and not df_filtered.empty:
+             map_center = [df_filtered['lat'].mean(), df_filtered['lon'].mean()]
+             zoom = 6
+        else:
+             map_center = [20.5937, 78.9629] # Center of India
+             zoom = 5
+             
+        m = folium.Map(location=map_center, zoom_start=zoom, tiles='CartoDB dark_matter')
 
+        # Limit points for performance (browser crash prevention)
         plot_data = df_filtered.head(1000)
         
         for _, row in plot_data.iterrows():
-            color = "#FF0000" if row['risk_status'] == 'CRITICAL' else "#00FFFF"
-            radius = 6 if row['risk_status'] == 'CRITICAL' else 2
+            is_critical = row['risk_status'] == 'CRITICAL'
+            color = "#FF0000" if is_critical else "#00FFFF"
+            radius = 6 if is_critical else 2
+            
+            # Label Accuracy Tag
+            accuracy_tag = "🛰️ GPS Verified" if row.get('geo_accuracy') == 'High' else "⚠️ Approx Loc"
             
             folium.CircleMarker(
                 location=[row['lat'], row['lon']],
@@ -155,19 +202,20 @@ with m_col1:
                 color=color,
                 fill=True,
                 fill_color=color,
-                fill_opacity=0.7,
-                popup=f"Pincode: {row['pincode']}\nRisk: {row['primary_risk_factor']}"
+                fill_opacity=0.8,
+                popup=folium.Popup(f"<b>Pincode: {row['pincode']}</b><br>Risk: {row['primary_risk_factor']}<br><small>{accuracy_tag}</small>", max_width=200)
             ).add_to(m)
 
         st_folium(m, width=None, height=400)
     else:
-        st.info("No data to display.")
+        st.info("No data to display with current filters.")
 
 with m_col2:
     st.subheader("📊 Risk Factor Breakdown")
     if not df_filtered.empty:
         critical_data = df_filtered[df_filtered['risk_status'] == 'CRITICAL']
         if not critical_data.empty:
+            # Pie chart of Primary Risk Factors
             fig = px.pie(
                 critical_data, 
                 names='primary_risk_factor', 
@@ -205,24 +253,33 @@ if not df_filtered.empty:
             selection_mode="single-row",
             column_config={
                 "velocity_index": st.column_config.ProgressColumn(
-                    "Velocity Load", format="%d", min_value=0, max_value=int(df['velocity_index'].max())),
+                    "Velocity Load", 
+                    format="%d", 
+                    min_value=0, 
+                    max_value=int(df['velocity_index'].max())
+                ),
                 "ghost_ratio": st.column_config.NumberColumn("Ghost Ratio", format="%.2f"),
                 "adult_spike_ratio": st.column_config.NumberColumn("Adult Spike", format="%.2f"),
             }
         )
         
         # Explainable AI Section (XAI)
+        # Check if user clicked a row
         if len(event.selection['rows']) > 0:
             selected_index = event.selection['rows'][0]
             selected_row = risky_table.iloc[selected_index]
             
-            st.markdown("### 🔍 XAI Inspector: Why was this Pincode Flagged?")
+            st.markdown(f"### 🔍 XAI Inspector: Why was Pincode {selected_row['pincode']} Flagged?")
             
             # Create a localized bar chart for this specific row
+            # We scale values just for visualization relative comparison
             xai_data = pd.DataFrame({
                 'Risk Factor': ['Velocity', 'Ghost Ratio', 'Adult Spike'],
-                'Value': [selected_row['velocity_index'], selected_row['ghost_ratio']*1000, selected_row['adult_spike_ratio']*1000] 
-                # Scaled for visualization comparison
+                'Value': [
+                    selected_row['velocity_index'], 
+                    selected_row['ghost_ratio'] * 1000, # Scale up for visibility
+                    selected_row['adult_spike_ratio'] * 1000
+                ]
             })
             
             fig_bar = px.bar(
@@ -230,10 +287,13 @@ if not df_filtered.empty:
                 x='Risk Factor', 
                 y='Value', 
                 color='Risk Factor',
-                title=f"Anomaly Profile: Pincode {selected_row['pincode']}"
+                title=f"Anomaly Profile: {selected_row['district']}",
+                text_auto=True
             )
             fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white")
             st.plotly_chart(fig_bar, use_container_width=True)
             
     else:
-        st.success("Region is Secure.")
+        st.success("Region is Secure. No anomalies detected.")
+else:
+    st.info("Awaiting Data...")
