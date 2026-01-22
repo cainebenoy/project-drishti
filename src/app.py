@@ -5,6 +5,19 @@ import folium
 from streamlit_folium import st_folium
 import numpy as np
 import os
+import sys
+
+# --- IMPORT PDF GENERATOR ---
+# We force the path to look in the current directory
+sys.path.append(os.path.dirname(__file__))
+
+PDF_MODULE_AVAILABLE = False
+try:
+    from reporter import generate_mission_pdf
+    PDF_MODULE_AVAILABLE = True
+except ImportError as e:
+    print(f"PDF Generator Error: {e}")
+    # We will show a warning in the UI later if this is False
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -14,63 +27,42 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for "Dark Mode" Vibe
+# Custom CSS
 st.markdown("""
 <style>
-    [data-testid="stSidebar"] {
-        background-color: #0E1117;
-        border-right: 1px solid #262730;
-    }
-    .metric-card {
-        background-color: #1E1E1E;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #00FFFF;
-    }
-    .risk-card {
-        background-color: #2D0F0F;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #FF4B4B;
-    }
+    [data-testid="stSidebar"] { background-color: #0E1117; border-right: 1px solid #262730; }
+    .metric-card { background-color: #1E1E1E; padding: 20px; border-radius: 10px; border-left: 5px solid #00FFFF; }
+    .risk-card { background-color: #2D0F0F; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; }
     h1, h2, h3 { color: #E0E0E0; }
     div[data-testid="stMetricValue"] { color: #00FFFF; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA LOADER (Pure Data Logic Only) ---
+# --- DATA LOADER ---
 @st.cache_data
 def load_data_engine():
-    """
-    Loads data and returns a tuple: (DataFrame, status_message, status_icon)
-    This prevents UI calls inside the cached function.
-    """
-    # Priority: Load Geocoded data if available
+    # Load Geocoded Data (Best)
     if os.path.exists("data/final_scored_data_geocoded.csv"):
         try:
-            df = pd.read_csv("data/final_scored_data_geocoded.csv")
-            return df, "High-Precision Satellite Data Loaded", "🛰️"
-        except Exception:
-            return pd.DataFrame(), "Error loading Geocoded Data", "❌"
-            
-    elif os.path.exists("data/final_scored_data.csv"):
+            return pd.read_csv("data/final_scored_data_geocoded.csv"), "High-Precision Satellite Data Loaded", "🛰️"
+        except: pass
+    
+    # Load Standard Data (Good)
+    if os.path.exists("data/final_scored_data.csv"):
         try:
-            df = pd.read_csv("data/final_scored_data.csv")
-            return df, "Using Standard Dataset (Run geocoder.py for precision)", "ℹ️"
-        except Exception:
-             return pd.DataFrame(), "Error loading Standard Data", "❌"
-    else:
-        return pd.DataFrame(), "Data not found. Please run engine.py first.", "❌"
+            return pd.read_csv("data/final_scored_data.csv"), "Standard Dataset Loaded", "ℹ️"
+        except: pass
+        
+    return pd.DataFrame(), "No Data Found. Run engine.py", "❌"
 
 def process_coordinates(df):
     if df.empty: return df
-
-    # Ensure required columns exist
-    if 'lat' not in df.columns: df['lat'] = 0.0
-    if 'lon' not in df.columns: df['lon'] = 0.0
+    
+    # Defaults
+    for col in ['lat', 'lon']: 
+        if col not in df.columns: df[col] = 0.0
     if 'geo_accuracy' not in df.columns: df['geo_accuracy'] = 'Low'
 
-    # Fallback Simulation for Low-Accuracy rows (Safe Zones)
     state_coords = {
         "Delhi": [28.7041, 77.1025], "Maharashtra": [19.7515, 75.7139],
         "Uttar Pradesh": [26.8467, 80.9462], "Karnataka": [15.3173, 75.7139],
@@ -80,220 +72,114 @@ def process_coordinates(df):
     }
     
     def fill_coords(row):
-        # Keep real coords if they exist
         if not pd.isna(row['lat']) and row['lat'] != 0.0:
             return row['lat'], row['lon']
-        
-        # Simulate for safe zones / missing data
         base = state_coords.get(row['state'], [20.5937, 78.9629])
-        jitter_lat = (int(row['pincode']) % 100) / 100.0 
-        jitter_lon = (int(row['pincode']) % 200) / 100.0 
-        return base[0] + (jitter_lat * 0.1), base[1] + (jitter_lon * 0.1)
+        jitter = (int(row['pincode']) % 100) / 100.0 
+        return base[0] + (jitter * 0.1), base[1] + (jitter * 0.2)
 
-    # Apply filling
     coords = df.apply(fill_coords, axis=1)
     df['lat'] = [x[0] for x in coords]
     df['lon'] = [x[1] for x in coords]
-    
     return df
 
-# --- EXECUTION ---
+# --- APP EXECUTION ---
 raw_df, msg, icon = load_data_engine()
-
-# Display Toast (Outside cached function)
-if not raw_df.empty and msg:
-    st.toast(msg, icon=icon)
-elif msg:
-    st.error(msg)
-
+if not raw_df.empty and msg: st.toast(msg, icon=icon)
 df = process_coordinates(raw_df)
 
-# --- SIDEBAR FILTERS ---
+# Sidebar
 st.sidebar.title("👁️ Drishti Controls")
 st.sidebar.markdown("---")
 
 if not df.empty:
-    state_filter = st.sidebar.multiselect(
-        "Filter by State",
-        options=df['state'].unique(),
-        default=df['state'].unique()[:3]
-    )
-
-    risk_filter = st.sidebar.radio(
-        "Threat Level",
-        ["All", "CRITICAL Only", "Low Risk"],
-        index=1 # Default to Critical
-    )
-
-    # Apply Filters
+    state_filter = st.sidebar.multiselect("Filter by State", df['state'].unique(), df['state'].unique()[:3])
+    risk_filter = st.sidebar.radio("Threat Level", ["All", "CRITICAL Only", "Low Risk"], index=1)
+    
     df_filtered = df.copy()
-    if state_filter:
-        df_filtered = df_filtered[df_filtered['state'].isin(state_filter)]
-
-    if risk_filter == "CRITICAL Only":
-        df_filtered = df_filtered[df_filtered['risk_status'] == 'CRITICAL']
-    elif risk_filter == "Low Risk":
-        df_filtered = df_filtered[df_filtered['risk_status'] == 'Low']
+    if state_filter: df_filtered = df_filtered[df_filtered['state'].isin(state_filter)]
+    if risk_filter == "CRITICAL Only": df_filtered = df_filtered[df_filtered['risk_status'] == 'CRITICAL']
+    elif risk_filter == "Low Risk": df_filtered = df_filtered[df_filtered['risk_status'] == 'Low']
     
-    st.sidebar.markdown("---")
-    st.sidebar.info("Model: Isolation Forest (Unsupervised)\nExplainability: SHAP")
-    
-    # Download Button
-    csv = df_filtered.to_csv(index=False).encode('utf-8')
-    st.sidebar.download_button(
-        "📥 Download Audit Report",
-        csv,
-        "drishti_audit_report.csv",
-        "text/csv",
-        key='download-csv'
-    )
-
+    st.sidebar.download_button("📥 Download Audit CSV", df_filtered.to_csv(index=False).encode('utf-8'), "drishti_report.csv")
 else:
     df_filtered = pd.DataFrame()
 
-# --- MAIN DASHBOARD ---
+# Main Layout
 col1, col2 = st.columns([3, 1])
 with col1:
     st.title("Project Drishti | Integrity Surveillance")
-    st.markdown("**Real-time Anomaly Detection Engine for Aadhaar Ecosystem**")
+    if not PDF_MODULE_AVAILABLE:
+        st.warning("⚠️ PDF Module not loaded. Install reportlab: `pip install reportlab`")
 with col2:
     if not df_filtered.empty:
         risk_count = len(df_filtered[df_filtered['risk_status'] == 'CRITICAL'])
-        st.markdown(f"""
-        <div class="risk-card">
-            <h3>Active Threats</h3>
-            <h1 style="color: #FF4B4B; margin:0;">{risk_count}</h1>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div class="risk-card"><h3>Active Threats</h3><h1 style="color: #FF4B4B; margin:0;">{risk_count}</h1></div>""", unsafe_allow_html=True)
 
 st.markdown("---")
 
-# Row 1: The Map & The Analysis
+# Visuals
 m_col1, m_col2 = st.columns([2, 1])
-
 with m_col1:
-    st.subheader("📍 Geospatial Anomaly Distribution")
-    
+    st.subheader("📍 Geospatial View")
     if not df_filtered.empty:
-        # Map Centering Logic
-        if risk_filter == "CRITICAL Only" and not df_filtered.empty:
-             map_center = [df_filtered['lat'].mean(), df_filtered['lon'].mean()]
-             zoom = 6
-        else:
-             map_center = [20.5937, 78.9629] # Center of India
-             zoom = 5
-             
-        m = folium.Map(location=map_center, zoom_start=zoom, tiles='CartoDB dark_matter')
-
-        # Limit points for performance (browser crash prevention)
-        plot_data = df_filtered.head(1000)
+        center = [df_filtered['lat'].mean(), df_filtered['lon'].mean()] if not df_filtered.empty else [20, 78]
+        m = folium.Map(location=center, zoom_start=5, tiles='CartoDB dark_matter')
         
-        for _, row in plot_data.iterrows():
-            is_critical = row['risk_status'] == 'CRITICAL'
-            color = "#FF0000" if is_critical else "#00FFFF"
-            radius = 6 if is_critical else 2
-            
-            # Label Accuracy Tag
-            accuracy_tag = "🛰️ GPS Verified" if row.get('geo_accuracy') == 'High' else "⚠️ Approx Loc"
-            
-            folium.CircleMarker(
-                location=[row['lat'], row['lon']],
-                radius=radius,
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.8,
-                popup=folium.Popup(f"<b>Pincode: {row['pincode']}</b><br>Risk: {row['primary_risk_factor']}<br><small>{accuracy_tag}</small>", max_width=200)
-            ).add_to(m)
-
-        st_folium(m, width=None, height=400)
-    else:
-        st.info("No data to display with current filters.")
+        # Limit markers
+        for _, row in df_filtered.head(500).iterrows():
+            color = "#FF0000" if row['risk_status'] == 'CRITICAL' else "#00FFFF"
+            folium.CircleMarker([row['lat'], row['lon']], radius=4, color=color, fill=True, fill_color=color).add_to(m)
+        st_folium(m, height=400, width=None)
 
 with m_col2:
-    st.subheader("📊 Risk Factor Breakdown")
+    st.subheader("📊 Anomaly Breakdown")
     if not df_filtered.empty:
-        critical_data = df_filtered[df_filtered['risk_status'] == 'CRITICAL']
-        if not critical_data.empty:
-            # Pie chart of Primary Risk Factors
-            fig = px.pie(
-                critical_data, 
-                names='primary_risk_factor', 
-                title='Dominant Anomalies',
-                color_discrete_sequence=px.colors.sequential.RdBu,
-                hole=0.4
-            )
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white", showlegend=False)
+        crit = df_filtered[df_filtered['risk_status'] == 'CRITICAL']
+        if not crit.empty:
+            fig = px.pie(crit, names='primary_risk_factor', hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
             st.plotly_chart(fig, use_container_width=True)
-            
-            st.markdown("""
-            **Key:**
-            * **Velocity Index:** Updates happening too fast (Batch Processing).
-            * **Ghost Ratio:** Address changes without biometric checks.
-            * **Spike Ratio:** Sudden surge in new adults.
-            """)
-        else:
-            st.success("No Critical Risks in this view.")
 
-# Row 2: The Hit List & XAI
+# Hit List & Actions
 st.markdown("---")
-st.subheader("🚨 Priority Audit List (Select to Inspect)")
+st.subheader("🚨 Priority Audit List (Select Row to Generate PDF)")
 
 if not df_filtered.empty:
-    risky_table = df_filtered[df_filtered['risk_status'] == 'CRITICAL'][
-        ['pincode', 'state', 'district', 'velocity_index', 'adult_spike_ratio', 'ghost_ratio', 'primary_risk_factor']
-    ].sort_values(by='velocity_index', ascending=False)
+    risky = df_filtered[df_filtered['risk_status'] == 'CRITICAL'].sort_values('velocity_index', ascending=False)
     
-    if not risky_table.empty:
-        # Selection Logic
-        event = st.dataframe(
-            risky_table, 
-            use_container_width=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            column_config={
-                "velocity_index": st.column_config.ProgressColumn(
-                    "Velocity Load", 
-                    format="%d", 
-                    min_value=0, 
-                    max_value=int(df['velocity_index'].max())
-                ),
-                "ghost_ratio": st.column_config.NumberColumn("Ghost Ratio", format="%.2f"),
-                "adult_spike_ratio": st.column_config.NumberColumn("Adult Spike", format="%.2f"),
-            }
-        )
+    event = st.dataframe(
+        risky[['pincode', 'state', 'district', 'velocity_index', 'primary_risk_factor']],
+        use_container_width=True,
+        selection_mode="single-row",
+        on_select="rerun"
+    )
+
+    # ACTION SECTION
+    if len(event.selection['rows']) > 0:
+        idx = event.selection['rows'][0]
+        row = risky.iloc[idx]
         
-        # Explainable AI Section (XAI)
-        # Check if user clicked a row
-        if len(event.selection['rows']) > 0:
-            selected_index = event.selection['rows'][0]
-            selected_row = risky_table.iloc[selected_index]
-            
-            st.markdown(f"### 🔍 XAI Inspector: Why was Pincode {selected_row['pincode']} Flagged?")
-            
-            # Create a localized bar chart for this specific row
-            # We scale values just for visualization relative comparison
-            xai_data = pd.DataFrame({
-                'Risk Factor': ['Velocity', 'Ghost Ratio', 'Adult Spike'],
-                'Value': [
-                    selected_row['velocity_index'], 
-                    selected_row['ghost_ratio'] * 1000, # Scale up for visibility
-                    selected_row['adult_spike_ratio'] * 1000
-                ]
-            })
-            
-            fig_bar = px.bar(
-                xai_data, 
-                x='Risk Factor', 
-                y='Value', 
-                color='Risk Factor',
-                title=f"Anomaly Profile: {selected_row['district']}",
-                text_auto=True
-            )
-            fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white")
-            st.plotly_chart(fig_bar, use_container_width=True)
-            
-    else:
-        st.success("Region is Secure. No anomalies detected.")
-else:
-    st.info("Awaiting Data...")
+        st.markdown(f"### ⚡ Action Console: {row['district']} ({row['pincode']})")
+        
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            st.info(f"Primary Risk: {row['primary_risk_factor']}")
+            if st.button("📡 Push Alert to SITAA"):
+                st.toast("✅ Alert Sent to Mainframe", icon="🔗")
+        
+        with ac2:
+            if PDF_MODULE_AVAILABLE:
+                # PDF Generation
+                try:
+                    pdf_data = generate_mission_pdf(row)
+                    st.download_button(
+                        label="📄 DOWNLOAD MISSION ORDER (PDF)",
+                        data=pdf_data,
+                        file_name=f"MISSION_{row['pincode']}.pdf",
+                        mime="application/pdf",
+                        type="primary"  # Red button
+                    )
+                except Exception as e:
+                    st.error(f"PDF Error: {e}")
+            else:
+                st.error("PDF Module Missing. Check logs.")
