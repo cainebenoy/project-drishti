@@ -72,6 +72,14 @@ st.markdown("""
         background-color: #1E1E1E;
         color: #00FFFF;
     }
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); }
+        70% { box-shadow: 0 0 0 10px rgba(255, 75, 75, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); }
+    }
+    .risk-card {
+        animation: pulse 2s infinite;
+    }
 </style>
 """, unsafe_allow_html=True)
 
