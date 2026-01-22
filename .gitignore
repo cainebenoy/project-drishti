@@ -207,8 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 # Ignore Data Files
-data/
-*.csv
 *.pkl
 
 # Ignore Python Cache
