@@ -1,6 +1,6 @@
 # 👁️ Project Drishti | AI-Powered Integrity Surveillance
 
-Built for UIDAI Hackathon 2026 > Theme: Data-Driven Innovation for Aadhaar
+Built by Team Builders&Breakers for UIDAI Hackathon 2026 > Theme: Data-Driven Innovation for Aadhaar
 
 ## 🚨 The Challenge: Silent Fraud & Operational Blindspots
 
